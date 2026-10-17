@@ -7,7 +7,7 @@ import tempfile
 import time
 import tomllib
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("observer", ROOT / "harness/observer.py")
@@ -161,7 +161,7 @@ class RuntimeTests(unittest.TestCase):
         for path in roles:
             role = tomllib.loads(path.read_text())
             self.assertEqual(role["model"], "gpt-6.1-sol")
-            self.assertEqual(role["model_reasoning_effort"], "high")
+            self.assertEqual(role["model_reasoning_effort"], "low" if role["name"] == "qa" else "high")
             self.assertTrue(role["developer_instructions"])
 
     def test_process_group_is_stopped(self):
@@ -174,6 +174,89 @@ class RuntimeTests(unittest.TestCase):
     def test_command_failure_is_not_reported_as_success(self):
         with self.assertRaises(RuntimeError):
             observer.command(["python3", "-c", "raise SystemExit(1)"])
+
+
+class DeferredIssueTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.state = Path(temp.name)
+        self.event = {"key": "issue:1:revision", "issue": 1}
+        self.issues = [{"title": "Missing optional page", "body": "Expected: open the future page.",
+                        "reason": "The main scenario works without this independent page."}]
+        self.board = {"project": "P1", "field": {"options": [{"name": "Inbox", "id": "inbox"}]}, "items": []}
+        self.rows = []
+        self.gh = Mock(repo="owner/repo")
+        self.gh.pages.side_effect = lambda _: list(self.rows)
+        self.gh.api.side_effect = self.api
+        self.gh.graphql.return_value = {"addProjectV2ItemById": {"item": {"id": "item-10"}}}
+        self.gh.status.side_effect = self.status
+
+    def api(self, path, body):
+        if path == "repos/owner/repo/issues":
+            created = dict(body, number=10, node_id="issue-10", state="open", labels=[],
+                           html_url="https://github.com/owner/repo/issues/10")
+            self.rows.append(created)
+            return created
+        self.assertEqual(path, "repos/owner/repo/issues/10/labels")
+        self.rows[0]["labels"] = [{"name": name} for name in body["labels"]]
+
+    def status(self, board, item_id, name):
+        board["items"] = [{"id": item_id, "fieldValueByName": {"name": name},
+                           "content": {"number": 10, "repository": {"nameWithOwner": "owner/repo"}}}]
+
+    def publish(self):
+        return observer.publish_deferred(self.event, self.issues, self.gh, self.board, self.state, lambda: None)
+
+    def test_inbox_before_managed_label_and_retry_preserves_user_status(self):
+        self.assertEqual(self.publish(), ["https://github.com/owner/repo/issues/10"])
+        self.assertIn("Источник: #1", self.rows[0]["body"])
+        self.gh.status.assert_called_once_with(self.board, "item-10", "Inbox")
+        calls = self.gh.method_calls
+        self.assertLess(next(i for i, c in enumerate(calls) if c[0] == "status"),
+                        next(i for i, c in enumerate(calls) if c[0] == "api" and c.args[0].endswith("/labels")))
+        self.board["items"][0]["fieldValueByName"]["name"] = "In Progress"
+        self.gh.reset_mock()
+        self.publish()
+        self.gh.api.assert_not_called()
+        self.gh.status.assert_not_called()
+        self.assertEqual(len(self.rows), 1)
+
+    def test_unknown_write_recovers_existing_issue_without_duplicate(self):
+        def timeout_after_create(path, body):
+            self.api(path, body)
+            raise RuntimeError("i/o timeout")
+        self.gh.api.side_effect = timeout_after_create
+        with self.assertRaisesRegex(RuntimeError, "timeout"):
+            self.publish()
+        self.gh.api.side_effect = self.api
+        self.publish()
+        self.assertEqual(len(self.rows), 1)
+        self.assertEqual(sum(c.args[0] == "repos/owner/repo/issues" for c in self.gh.api.call_args_list), 1)
+
+    def test_unknown_write_with_no_visible_issue_is_not_replayed(self):
+        self.gh.api.side_effect = RuntimeError("i/o timeout")
+        with self.assertRaisesRegex(RuntimeError, "timeout"):
+            self.publish()
+        self.gh.api.side_effect = self.api
+        with self.assertRaisesRegex(RuntimeError, "unknown outcome"):
+            self.publish()
+        self.assertEqual(self.gh.api.call_count, 1)
+
+    def test_retry_cannot_silently_drop_or_replace_deferred_requirement(self):
+        self.publish()
+        self.issues = []
+        self.gh.reset_mock()
+        with self.assertRaisesRegex(RuntimeError, "list changed"):
+            self.publish()
+        self.gh.api.assert_not_called()
+
+    def test_blocked_result_and_incomplete_deferral_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "blocked"):
+            observer.validate_result({}, {"outcome": "blocked", "deferred_issues": self.issues})
+        with self.assertRaisesRegex(ValueError, "reason"):
+            observer.validate_result({}, {"outcome": "ready", "deferred_issues": [{"title": "Bug", "body": "Details"}]})
+        observer.validate_result({}, {"outcome": "ready", "deferred_issues": self.issues})
 
 
 if __name__ == "__main__":

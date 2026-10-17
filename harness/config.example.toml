@@ -1,12 +1,17 @@
+# Установщик заполняет эти поля по origin, --project и текущему пользователю gh.
 repository = "owner/repository"
 project_owner = "owner"
-project_owner_kind = "user" # or organization
+project_owner_kind = "user" # Для Project организации: "organization".
 project_number = 1
-trusted_users = ["owner"]
-workspace = "." # dedicated clean checkout; /workspace inside Docker
-state_dir = ".state" # persistent; /state inside Docker
+trusted_users = ["owner"] # Чьи комментарии к PR обрабатывать.
+
+# Пути относительно этого конфига. Для наблюдателя нужен отдельный чистый clone.
+workspace = "."
+state_dir = ".state" # Сохраняйте между перезапусками.
 poll_seconds = 60
-job_timeout_seconds = 240
-check_timeout_seconds = 90
-check_command = ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]
-required_checks = ["team-check"]
+job_timeout_seconds = 1800 # Лимит запуска Codex; QA дополнительно ограничен инструкциями.
+check_timeout_seconds = 300 # Отдельный лимит команды проверки.
+
+# Укажите реальные проверки приложения. Команда запускается без shell.
+check_command = [] # Например ["make", "check"]. Без команды изменения не публикуются.
+required_checks = [] # Например ["backend", "frontend"]. Без CI jobs PR остаётся Draft.
