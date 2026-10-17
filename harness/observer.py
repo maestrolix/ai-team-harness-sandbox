@@ -342,6 +342,8 @@ def prepare(workspace, event, gh):
 def execute(event, cfg, gh, snapshot, state):
     workspace = Path(cfg["workspace"]).resolve()
     branch, default = prepare(workspace, event, gh)
+    if event["kind"] == "issue":
+        event = dict(event, context=dict(event["context"], discussion=gh.pages(f"repos/{gh.repo}/issues/{event['issue']}/comments")))
     item = next((i for i in snapshot["items"] if i["id"] == event.get("item")), {})
     previous_status = (item.get("fieldValueByName") or {}).get("name", "Review")
     gh.status(snapshot, event.get("item"), "In Progress")
