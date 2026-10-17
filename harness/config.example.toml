@@ -1,0 +1,12 @@
+repository = "owner/repository"
+project_owner = "owner"
+project_owner_kind = "user" # or organization
+project_number = 1
+trusted_users = ["owner"]
+workspace = "." # dedicated clean checkout; /workspace inside Docker
+state_dir = ".state" # persistent; /state inside Docker
+poll_seconds = 60
+job_timeout_seconds = 240
+check_timeout_seconds = 90
+check_command = ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]
+required_checks = ["team-check"]

@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+.state
+**/__pycache__
+node_modules
+test-results
+playwright-report
+auth.json
+*.zip
