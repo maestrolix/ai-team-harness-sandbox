@@ -26,9 +26,13 @@ def with_comment():
     data = snapshot()
     data["items"][0]["fieldValueByName"]["name"] = "Review"
     data["prs"] = [{"number": 2, "body": "<!-- ai-team-issue:1 -->", "labels": [{"name": "ai:managed"}],
-                    "head": {"ref": "ai/1", "sha": "old"},
+                    "head": {"ref": "ai/1", "sha": "old", "repo": {"full_name": "owner/repo"}},
                     "discussion": [{"id": 7, "kind": "inline", "body": "Why this behavior?",
-                                    "updated_at": "2026-10-17T10:00:00Z", "user": {"login": "owner"}}]}]
+                                    "pull_request_review_id": 80, "html_url": "https://github.com/owner/repo/pull/2#discussion_r7",
+                                    "updated_at": "2026-10-17T10:00:00Z", "user": {"login": "owner"}},
+                                   {"id": 80, "kind": "review", "body": "", "state": "COMMENTED",
+                                    "submitted_at": "2026-10-17T10:01:00Z", "user": {"login": "owner"},
+                                    "html_url": "https://github.com/owner/repo/pull/2#pullrequestreview-80"}]}]
     return data
 
 
@@ -100,7 +104,7 @@ class QueueTests(unittest.TestCase):
         data["prs"][0]["head"]["sha"] = "new"
         fresh = observer.refresh(event, data, self.cfg)
         self.assertEqual(fresh["head"], "new")
-        self.assertEqual(fresh["root_comment"], 7)
+        self.assertEqual(fresh["feedback"][0]["comment"]["id"], 7)
 
     def test_withdrawn_issue_does_not_execute_queued_work(self):
         data = snapshot()
