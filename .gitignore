@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.state/
+__pycache__/
+*.pyc
+node_modules/
+test-results/
+playwright-report/
+auth.json
+harness.toml
