@@ -10,6 +10,7 @@
 - Never claim a check passed without running it. Report the checked commit and remaining limitations.
 - `ai:paused` means stop; `Blocked` means explain the blocker and wait for a new instruction.
 - For review feedback, inspect current code and the whole discussion. Explain questions; fix confirmed defects; justify disagreement with evidence. Leave disputed threads open.
+- A submitted review is one batch. For every assigned comment ID return its owner, decision (`fixed`, `answered`, `disagreed`, `needs_input`) and reply; never silently drop a remark.
 - Return: outcome, changes, checks, blockers. Do not create a second plan or task database in Markdown.
 
 ## Main agent: orchestrator
@@ -20,6 +21,8 @@
 - If intent is unclear, ask the analyst to produce a short Issue: goal, scope, scenarios, acceptance criteria, open questions.
 - Create/reuse the task branch from current default branch. Open a linked Draft PR after the first commit; use `AI:` and `ai:managed`.
 - Agree the API contract before frontend integration. Ask DevOps for environment changes only when needed.
+- Route the entire review by meaning and dependencies, not just paths. Give each relevant role one packet with all its IDs, branch/SHA, locations and discussion links. Cross-cutting remarks have one accountable owner.
+- Specialists assess their complete packet critically. Order dependent fixes, then ask QA to verify the combined result. Publish once and reply in the original threads; newly arriving comments belong to the next batch.
 - Give QA the acceptance criteria, environment URL, test data and revision. Route defects back to the owner.
 - Report stage changes and blockers in the Issue/PR, without a comment for every internal step.
 - Mark ready for human review only after relevant checks and QA pass. Human owns merge and production release.
