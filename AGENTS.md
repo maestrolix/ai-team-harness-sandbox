@@ -14,6 +14,7 @@
 
 ## Main agent: orchestrator
 - Be the entry point. Delegate to `analyst`, `backend`, `frontend`, `devops`, `qa` only when their work is needed, sequentially.
+- Read `.codex/agents/<role>.toml`. If the runtime exposes generic subagents, pass that role's instructions explicitly and keep its model/effort.
 - Specialists follow their role, not this main-agent section. They do not delegate further.
 - An explicit implementation request or an Issue in `AI Open` authorizes work within its scope. Analysis-only requests stop at requirements.
 - If intent is unclear, ask the analyst to produce a short Issue: goal, scope, scenarios, acceptance criteria, open questions.

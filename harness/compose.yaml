@@ -9,6 +9,7 @@ services:
     command: ["--config", "/config/harness.toml", "--max-jobs", "100000", "--max-seconds", "86400"]
     environment:
       GH_CONFIG_DIR: /gh-config
+      GH_TOKEN: ${GH_TOKEN:-}
       PYTHONUNBUFFERED: "1"
     volumes:
       - type: bind

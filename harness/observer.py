@@ -19,12 +19,12 @@ MODEL = "gpt-6.1-sol"
 EFFORT = "high"
 
 
-def command(args, cwd=None, timeout=45, data=None, env=None):
+def command(args, cwd=None, timeout=45, data=None, env=None, include_stderr=False):
     p = subprocess.run(args, cwd=cwd, input=data, text=True, capture_output=True,
                        timeout=timeout, env=env)
     if p.returncode:
         raise RuntimeError(f"{args[0]} failed ({p.returncode}): {p.stderr[-1500:]}")
-    return p.stdout.strip()
+    return (p.stdout + (p.stderr if include_stderr else "")).strip()
 
 
 class GitHub:
@@ -32,10 +32,22 @@ class GitHub:
         self.cfg, self.repo = cfg, cfg["repository"]
 
     def api(self, path, body=None, method=None):
-        args = ["gh", "api", path, "--method", method or ("POST" if body is not None else "GET")]
+        method = method or ("POST" if body is not None else "GET")
+        args = ["gh", "api", path, "--method", method]
         if body is not None:
             args += ["--input", "-"]
-        raw = command(args, data=json.dumps(body) if body is not None else None)
+        read_only = method == "GET" or (path == "graphql" and
+                    (body or {}).get("query", "").lstrip().startswith("query"))
+        for attempt in range(2):
+            try:
+                raw = command(args, data=json.dumps(body) if body is not None else None)
+                break
+            except (RuntimeError, subprocess.TimeoutExpired) as exc:
+                transient = isinstance(exc, subprocess.TimeoutExpired) or any(
+                    s in str(exc).lower() for s in ("timeout", "connection reset", "unexpected eof"))
+                if not read_only or attempt or not transient:
+                    raise  # Never blindly retry a write with an unknown outcome.
+                time.sleep(1)
         return json.loads(raw) if raw else None
 
     def pages(self, path):
@@ -342,7 +354,7 @@ def execute(event, cfg, gh, snapshot, state):
             gh.guard(event)  # API errors stop work instead of ignoring a possible pause.
             last_guard[0] = time.monotonic()
 
-    run_dir = state / "runs" / hashlib.sha256(event["key"].encode()).hexdigest()[:16]
+    run_dir = state / "runs" / f"{hashlib.sha256(event['key'].encode()).hexdigest()[:16]}-{time.time_ns()}"
     result = run_codex(workspace, event, cfg, run_dir, guard)
     guard(True)
     if result["outcome"] == "blocked":
@@ -358,8 +370,9 @@ def execute(event, cfg, gh, snapshot, state):
         git("diff", "--check")
         if not cfg.get("check_command"):
             raise RuntimeError("Configure check_command before publishing code")
-        checks = command(cfg["check_command"], cwd=workspace, timeout=cfg.get("check_timeout_seconds", 90))
+        checks = command(cfg["check_command"], cwd=workspace, timeout=cfg.get("check_timeout_seconds", 90), include_stderr=True)
         (run_dir / "checks.txt").write_text(checks)
+        result["reply"] += "\n\nЛокальная проверка: `" + " ".join(cfg["check_command"]) + "` — успешно."
         guard(True)
     if dirty:
         git("add", "--all")

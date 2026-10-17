@@ -136,6 +136,19 @@ class QueueTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_network_read_retries_once_but_writes_never_replay(self):
+        gh = observer.GitHub({"repository": "owner/repo"})
+        with patch.object(observer, "command", side_effect=[RuntimeError("i/o timeout"), '{"state":"open"}']) as cmd, patch.object(observer.time, "sleep"):
+            self.assertEqual(gh.api("repos/owner/repo/issues/1")["state"], "open")
+            self.assertEqual(cmd.call_count, 2)
+        with patch.object(observer, "command", side_effect=[RuntimeError("i/o timeout"), '{"data":{}}']) as cmd, patch.object(observer.time, "sleep"):
+            self.assertEqual(gh.api("graphql", {"query": "query { viewer { login } }"}), {"data": {}})
+            self.assertEqual(cmd.call_count, 2)
+        with patch.object(observer, "command", side_effect=RuntimeError("i/o timeout")) as cmd:
+            with self.assertRaises(RuntimeError):
+                gh.api("repos/owner/repo/issues/1/comments", {"body": "A reply"})
+            self.assertEqual(cmd.call_count, 1)
+
     def test_roles_use_requested_model_and_effort(self):
         roles = list((ROOT / ".codex/agents").glob("*.toml"))
         if not roles:  # Docker runtime copies role files from its mounted project.
