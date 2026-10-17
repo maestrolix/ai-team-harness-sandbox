@@ -525,6 +525,8 @@ def execute(event, cfg, gh, snapshot, state):
         verified.mkdir(exist_ok=True)
         (verified / str(pr["number"])).write_text(git("rev-parse", "HEAD"))
         published_sha = git("rev-parse", "HEAD")
+        if event.get("pr"):
+            event["head"] = published_sha  # Failure reporting must guard our new head, not the old revision.
         result["reply"] += f"\n\nPR: {pr['html_url']}\nCommit: `{git('rev-parse', 'HEAD')}`. Ожидает CI и ревью человека."
     # guard() used the old SHA; after our own push only recheck labels/closed state.
     for n in set(filter(None, [event.get("issue"), event.get("pr")])):

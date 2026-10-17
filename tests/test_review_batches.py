@@ -328,6 +328,7 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "feedback"):
             self.execute("fixed", "ready")
         self.gh.reply.assert_not_called()
+        self.assertEqual(self.ev["head"], "new")  # The outer failure handler can now mark the job Blocked.
 
     def test_real_github_guard_blocks_changed_head(self):
         gh = observer.GitHub(CFG)
