@@ -288,6 +288,14 @@ class PublicationTests(unittest.TestCase):
         for call in self.gh.reply.call_args_list[:-1]:
             self.assertIn("new", call.args[1])
 
+    def test_deferred_issue_failure_prevents_code_publication_and_acceptance(self):
+        self.dirty = True
+        with patch.object(observer, "publish_deferred", side_effect=RuntimeError("Inbox unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "Inbox unavailable"):
+                self.execute("fixed", "ready")
+        self.assertFalse(any(c[0] == "git" and c[1] in {"push", "add", "-c"} for c in self.calls))
+        self.gh.reply.assert_not_called()
+
     def test_stale_feedback_during_model_run_blocks_commit_push_and_replies(self):
         self.dirty = True
         self.gh.discussion.return_value[1]["body"] = "Changed while model worked"
