@@ -143,6 +143,19 @@ class BatchQueueTests(unittest.TestCase):
 
 
 class DecisionTests(unittest.TestCase):
+    def test_model_context_keeps_evidence_without_duplicate_api_metadata(self):
+        ev = event()
+        original = ev["context"]["pr"]["discussion"][1]
+        original.update(path="backend/task.go", line=23, diff_hunk="@@ -22 +23 @@\n+checkOwner()")
+        ev["context"]["pr"]["head"]["repo"]["large_unused_metadata"] = "unused"
+        compact = observer.prompt_event(ev)
+        self.assertEqual(compact["feedback"], [{"id": f["id"]} for f in ev["feedback"]])
+        self.assertNotIn("repo", compact["context"]["pr"]["head"])
+        evidence = compact["context"]["pr"]["discussion"][1]
+        for field in ("body", "html_url", "path", "line", "diff_hunk", "pull_request_review_id"):
+            self.assertEqual(evidence[field], original[field])
+        self.assertIn("repo", ev["context"]["pr"]["head"])
+
     def test_every_id_requires_one_valid_disposition(self):
         ev = event()
         good = result(ev)
