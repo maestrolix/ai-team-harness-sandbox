@@ -302,7 +302,7 @@ class PublicationTests(unittest.TestCase):
 
     def test_deferred_issue_failure_prevents_code_publication_and_acceptance(self):
         self.dirty = True
-        with patch.object(observer, "publish_deferred", side_effect=RuntimeError("Inbox unavailable")):
+        with patch.object(observer, "publish_issues", side_effect=RuntimeError("Inbox unavailable")):
             with self.assertRaisesRegex(RuntimeError, "Inbox unavailable"):
                 self.execute("fixed", "ready")
         self.assertFalse(any(c[0] == "git" and c[1] in {"push", "add", "-c"} for c in self.calls))

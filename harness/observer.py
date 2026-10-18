@@ -18,6 +18,7 @@ MARKER = "<!-- ai-team-harness -->"
 MODEL = "gpt-6.1-sol"
 EFFORT = "high"
 ROLES = ["analyst", "backend", "frontend", "fullstack", "devops", "qa", "orchestrator"]
+ISSUE_ROLES = ["parent", "backend", "frontend", "fullstack", "devops", "qa"]
 
 
 def command(args, cwd=None, timeout=45, data=None, env=None, include_stderr=False):
@@ -325,6 +326,13 @@ def result_schema(event):
                                                 "reason": {"type": "string"}},
                                  "required": ["title", "body", "reason"]}}},
               "required": ["outcome", "summary", "reply", "checks", "deferred_issues"]}
+    if event.get("kind") == "issue":
+        schema["properties"]["planned_issues"] = {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"title": {"type": "string"}, "body": {"type": "string"},
+                           "role": {"type": "string", "enum": ISSUE_ROLES}},
+            "required": ["title", "body", "role"]}}
+        schema["required"].append("planned_issues")
     if event.get("feedback"):
         schema["properties"]["decisions"] = {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
@@ -351,6 +359,20 @@ def validate_result(event, result):
     titles = [" ".join(i["title"].casefold().split()) for i in deferred]
     if len(titles) != len(set(titles)):
         raise ValueError("Duplicate deferred issue titles")
+    planned = result.get("planned_issues", [])
+    if not isinstance(planned, list):
+        raise ValueError("Planned issues must be a list")
+    if planned and (event.get("kind") != "issue" or event.get("feedback")
+                    or result["outcome"] != "answer" or deferred):
+        raise ValueError("Planned issues require an issue answer without fixes or deferrals")
+    for issue in planned:
+        if (not isinstance(issue, dict) or any(not isinstance(issue.get(k), str) or not issue[k].strip()
+                                             for k in ("title", "body", "role"))
+                or issue["role"] not in ISSUE_ROLES or len(issue["title"]) > 240):
+            raise ValueError("Planned issues need a short title, body and supported role")
+    roles = [i["role"] for i in planned]
+    if len(roles) != len(set(roles)) or ("parent" in roles and roles[0] != "parent"):
+        raise ValueError("Use one planned issue per role, with the optional parent first")
     if not event.get("feedback"):
         return
     decisions = result.get("decisions", [])
@@ -367,40 +389,45 @@ def validate_result(event, result):
         raise ValueError("Ready requires a confirmed fix; answers/disagreement must use answer")
 
 
-def publish_deferred(event, issues, gh, snapshot, state, guard):
+def publish_issues(event, issues, gh, snapshot, state, guard, kind="deferred"):
     key = hashlib.sha256(event["key"].encode()).hexdigest()[:24]
-    manifest = state / "deferred" / f"{key}.json"
+    manifest = state / kind / f"{key}.json"
     if manifest.exists():
         if json.loads(manifest.read_text()) != issues:
-            raise RuntimeError("Deferred issue list changed on retry; inspect the saved manifest")
+            raise RuntimeError(f"{kind.title()} issue list changed on retry; inspect the saved manifest")
     elif issues:
         manifest.parent.mkdir(exist_ok=True)
         manifest.write_text(json.dumps(issues, ensure_ascii=False))
     if not issues:
         return []
     if not any(o["name"] == "Inbox" for o in snapshot["field"]["options"]):
-        raise RuntimeError("Project has no Inbox for deferred issues")
+        raise RuntimeError(f"Project has no Inbox for {kind} issues")
     existing = gh.pages(f"repos/{gh.repo}/issues?state=all")
     sources = ", ".join(f"#{n}" for n in dict.fromkeys(filter(None, [event.get("issue"), event.get("pr")])))
     urls = []
     for index, issue in enumerate(issues):
         guard()
-        stamp = f"<!-- ai-team-deferred:{key}:{index} -->"
+        stamp = f"<!-- ai-team-{kind}:{key}:{index} -->"
         matches = [i for i in existing if not i.get("pull_request") and stamp in (i.get("body") or "")]
         if len(matches) > 1:
-            raise RuntimeError("Duplicate deferred issues found; inspect before continuing")
+            raise RuntimeError(f"Duplicate {kind} issues found; inspect before continuing")
         if matches:
             created = matches[0]
             if created["state"] != "open" or "ai:paused" in labels(created):
-                raise RuntimeError("Deferred issue was closed or paused; inspect before continuing")
+                raise RuntimeError(f"{kind.title()} issue was closed or paused; inspect before continuing")
         else:
             attempt = manifest.with_name(f"{key}-{index}.attempt")
             if attempt.exists():
                 raise RuntimeError("Previous issue creation has an unknown outcome; inspect GitHub before retrying")
+            title = issue["title"]
+            body = f"{MARKER}\n{stamp}\nИсточник: {sources}\n\n{issue['body']}"
+            if kind == "deferred":
+                title = f"Bug: {title}"
+                body += f"\n\nПричина переноса: {issue['reason']}"
+            elif index and issues[0]["role"] == "parent":
+                body += f"\n\nОбщая задача: {urls[0]}"
             attempt.touch(exist_ok=False)
-            created = gh.api(f"repos/{gh.repo}/issues", {
-                "title": f"Bug: {issue['title']}",
-                "body": f"{MARKER}\n{stamp}\nИсточник: {sources}\n\n{issue['body']}\n\nПричина переноса: {issue['reason']}"})
+            created = gh.api(f"repos/{gh.repo}/issues", {"title": title, "body": body})
             existing.append(created)
         guard()
         item = next((i for i in snapshot["items"] if (i.get("content") or {}).get("number") == created["number"]
@@ -408,7 +435,7 @@ def publish_deferred(event, issues, gh, snapshot, state, guard):
         if item:
             status = (item.get("fieldValueByName") or {}).get("name")
             if status and status != "Inbox" and "ai:managed" not in labels(created):
-                raise RuntimeError("Deferred issue moved before publication completed; inspect its status")
+                raise RuntimeError(f"{kind.title()} issue moved before publication completed; inspect its status")
             if not status:
                 gh.status(snapshot, item["id"], "Inbox")
         else:
@@ -417,8 +444,12 @@ def publish_deferred(event, issues, gh, snapshot, state, guard):
             gh.status(snapshot, added["addProjectV2ItemById"]["item"]["id"], "Inbox")
         # Make the issue eligible for future AI Open only after placing it in Inbox.
         guard()
-        if "ai:managed" not in labels(created):
-            gh.api(f"repos/{gh.repo}/issues/{created['number']}/labels", {"labels": ["ai:managed"]})
+        wanted = ["ai:managed"]
+        if kind == "planned" and issue["role"] != "parent":
+            wanted.append(f"role:{issue['role']}")
+        missing = [label for label in wanted if label not in labels(created)]
+        if missing:
+            gh.api(f"repos/{gh.repo}/issues/{created['number']}/labels", {"labels": missing})
         urls.append(created["html_url"])
     return urls
 
@@ -461,6 +492,11 @@ def run_codex(workspace, event, cfg, run_dir, guard):
     schema = result_schema(event)
     schema_path, result_path = run_dir / "schema.json", run_dir / "result.json"
     schema_path.write_text(json.dumps(schema))
+    planning = ("Если поручено подготовить Issue, следуй правилам аналитика: верни answer и planned_issues "
+                "с title, body (требования, критерии и зависимости), role для каждой задачи; общая задача — "
+                "role=parent первой, остальные — нужные профильные роли. Не меняй файлы и не запускай разработчиков или QA. "
+                "Наблюдатель создаст Issue в Inbox, добавит ссылки на общую задачу и источник; иначе planned_issues пустой. "
+                if event.get("kind") == "issue" else "")
     prompt = ("Ты — оркестратор, описанный в AGENTS.md. Обработай только это событие, работа по которому разрешена. "
               "Привлекай нужных специалистов по именам ролей последовательно, закрывая каждого субагента перед запуском следующего. "
               "Специалисты не должны делегировать работу дальше. "
@@ -483,7 +519,7 @@ def run_codex(workspace, event, cfg, run_dir, guard):
               "disagreed — аргументированное несогласие с подтверждающими фактами, needs_input — требуется уточнение. "
               "Не требуй изменения кода ради ответа на вопрос или из-за неподтверждённого возражения. "
               "Согласуй общие контракты до начала зависимых работ. "
-              "После всех правок передай QA общий результат и все замечания, за которые отвечает QA, для одной общей проверки. "
+              "После правок кода передай QA общий результат и все замечания, за которые отвечает QA, для одной общей проверки. "
               "На задачу допускаются один основной проход QA и одна адресная перепроверка, суммарно до 10 минут работы QA. "
               "Сохраняй счётчик проходов и оставшееся время между вызовами; третий проход автоматически не запускай. "
               "Бюджет QA не продлевает общий лимит задания; исчерпание времени не означает успешную приёмку. "
@@ -500,7 +536,7 @@ def run_codex(workspace, event, cfg, run_dir, guard):
               "answer — если правки не нужны; blocked — при нерешённых вопросах, сбоях или неуспешных проверках. "
               "Наблюдатель опубликует все исправления вместе, один раз, и ответит в каждом исходном обсуждении. "
               "Не помечай обсуждения ревью решёнными. Верни JSON требуемого формата с точным перечнем реально выполненных проверок. "
-              f"Жёсткий лимит времени выполнения: {cfg.get('job_timeout_seconds', 300)} секунд. "
+              + planning + f"Жёсткий лимит времени выполнения: {cfg.get('job_timeout_seconds', 300)} секунд. "
               "Каждый субагент использует gpt-6.1-sol: QA — уровень рассуждений low, остальные — high.\nДАННЫЕ СОБЫТИЯ:\n" + json.dumps(prompt_event(event), ensure_ascii=False))
     args = ["codex", "exec", "--ignore-user-config", "--model", MODEL,
             "-c", f'model_reasoning_effort="{EFFORT}"', "-c", "approval_policy=\"never\"",
@@ -608,10 +644,15 @@ def execute(event, cfg, gh, snapshot, state):
         guard(True)
     guard_feedback()
     if result["outcome"] in {"ready", "answer"}:
-        deferred_urls = publish_deferred(event, result.get("deferred_issues", []), gh, snapshot, state, guard)
+        deferred_urls = publish_issues(event, result.get("deferred_issues", []), gh, snapshot, state, guard)
         if deferred_urls:
             result["reply"] += "\n\nВынесены в связанные Issue некритичные недоработки (не исправлены):\n" + "\n".join(
                 f"- {url}" for url in deferred_urls)
+        planned = result.get("planned_issues", [])
+        planned_urls = publish_issues(event, planned, gh, snapshot, state, guard, kind="planned")
+        if planned_urls:
+            result["reply"] += "\n\nПодготовлены задачи в Inbox (реализация не запускалась):\n" + "\n".join(
+                f"- {issue['role']}: {issue['title']} — {url}" for issue, url in zip(planned, planned_urls))
     guard(True)
     guard_feedback()
     if dirty:
