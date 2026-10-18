@@ -18,7 +18,7 @@ if sys.version_info < (3, 11):
 import tomllib
 
 SOURCE = "https://github.com/maestrolix/ai-team-harness-sandbox.git"
-ROLES = ("analyst", "backend", "frontend", "devops", "qa")
+ROLES = ("analyst", "backend", "frontend", "fullstack", "devops", "qa")
 STATUSES = ("Inbox", "AI Open", "In Progress", "Review", "Blocked", "Done")
 START, END = "<!-- ai-team:start -->", "<!-- ai-team:end -->"
 

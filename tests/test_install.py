@@ -98,6 +98,7 @@ class InstallTests(unittest.TestCase):
         created = [call.args[1]["name"] for call in api.call_args_list if len(call.args) == 2]
         self.assertNotIn("ai:managed", created)
         self.assertIn("ai:paused", created)
+        self.assertIn("role:fullstack", created)
 
     def test_existing_statuses_and_labels_need_no_recreation(self):
         project = {"id": "project", "fields": {"nodes": [
@@ -142,6 +143,11 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(cfg["trusted_users"], ["developer"])
         self.assertEqual(cfg["check_command"], ["make", "check"])
         self.assertTrue((self.root / "harness/observer.py").exists())
+        for name in ("fullstack", "backend", "frontend"):
+            role = tomllib.loads((self.root / f".codex/agents/{name}.toml").read_text())
+            self.assertEqual(role["name"], name)
+            self.assertEqual(role["model"], "gpt-6.1-sol")
+            self.assertEqual(role["model_reasoning_effort"], "high")
         self.assertEqual((self.root / "AGENTS.md").read_text().count(installer.START), 1)
         self.assertEqual(remote.call_count, 2)
 
