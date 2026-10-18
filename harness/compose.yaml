@@ -6,7 +6,7 @@ services:
       dockerfile: harness/Dockerfile
     init: true
     restart: unless-stopped
-    command: ["--config", "/config/harness.toml", "--max-jobs", "100000", "--max-seconds", "86400"]
+    command: ["--config", "/config/harness.toml", "--workers", "${HARNESS_WORKERS:-1}", "--max-seconds", "86400"]
     environment:
       GH_CONFIG_DIR: /gh-config
       GH_TOKEN: ${GH_TOKEN:-}
@@ -27,11 +27,11 @@ services:
         source: ${HARNESS_CODEX_AUTH:-../.state/codex-auth.json}
         target: /home/node/.codex/auth.json
       - state:/state
-    stop_grace_period: 15s
+    stop_grace_period: 20s
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
-    mem_limit: 2g
-    cpus: 2
+    mem_limit: ${HARNESS_MEMORY:-4g}
+    cpus: ${HARNESS_CPUS:-4}
     # No Docker socket: application environments run separately.
 volumes:
   state:

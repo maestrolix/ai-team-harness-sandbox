@@ -1,23 +1,27 @@
-"""Behavioral regressions for published-review batches; no network or model runs."""
+"""Регрессии пакетной обработки опубликованного ревью."""
+
 import copy
-import importlib.util
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("review_batch_observer", ROOT / "harness/observer.py")
-observer = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(observer)
+from ai_team_harness import events, github, prompts, publication, results, store, workflow
+
+ROOT = Path(__file__).resolve().parents[2]
 CFG = {"repository": "owner/repo", "trusted_users": ["owner"]}
 
 
 def comment(number, kind="inline", body=None, **extra):
-    result = {"id": number, "kind": kind, "body": body or f"Please inspect {number}",
-              "user": {"login": "owner"}, "updated_at": "2026-10-17T12:00:00Z",
-              "html_url": f"https://github.com/owner/repo/pull/2#discussion_r{number}"}
+    result = {
+        "id": number,
+        "kind": kind,
+        "body": body or f"Please inspect {number}",
+        "user": {"login": "owner"},
+        "updated_at": "2026-10-17T12:00:00Z",
+        "html_url": f"https://github.com/owner/repo/pull/2#discussion_r{number}",
+    }
     if kind == "review":
         result.update(state="CHANGES_REQUESTED", submitted_at="2026-10-17T12:00:00Z")
     elif kind == "inline":
@@ -27,23 +31,50 @@ def comment(number, kind="inline", body=None, **extra):
 
 
 def snapshot():
-    return {"items": [], "prs": [{"number": 2, "body": "<!-- ai-team-issue:1 -->",
-            "labels": [{"name": "ai:managed"}],
-            "head": {"ref": "ai/1", "sha": "old", "repo": {"full_name": "owner/repo"}},
-            "discussion": [comment(80, "review"), comment(7), comment(8)]}]}
+    return {
+        "items": [],
+        "prs": [
+            {
+                "number": 2,
+                "body": "<!-- ai-team-issue:1 -->",
+                "labels": [{"name": "ai:managed"}],
+                "head": {"ref": "ai/1", "sha": "old", "repo": {"full_name": "owner/repo"}},
+                "discussion": [comment(80, "review"), comment(7), comment(8)],
+            }
+        ],
+    }
 
 
 def event():
     pr = snapshot()["prs"][0]
-    return {"key": "batch", "kind": "feedback", "pr": 2, "issue": 1,
-            "head": "old", "branch": "ai/1", "context": {"pr": pr},
-            "feedback": observer.feedback_groups(pr, CFG)["review:80"]}
+    return {
+        "key": "batch",
+        "kind": "feedback",
+        "pr": 2,
+        "issue": 1,
+        "head": "old",
+        "branch": "ai/1",
+        "context": {"pr": pr},
+        "feedback": events.feedback_groups(pr, CFG)["review:80"],
+    }
 
 
 def result(ev, decision="answered", outcome="answer"):
-    return {"outcome": outcome, "summary": "Review complete", "reply": "Batch complete", "checks": [],
-            "decisions": [{"id": f["id"], "role": "backend", "decision": decision,
-                           "reply": f"Disposition for {f['id']}"} for f in ev["feedback"]]}
+    return {
+        "outcome": outcome,
+        "summary": "Review complete",
+        "reply": "Batch complete",
+        "checks": [],
+        "decisions": [
+            {
+                "id": f["id"],
+                "role": "backend",
+                "decision": decision,
+                "reply": f"Disposition for {f['id']}",
+            }
+            for f in ev["feedback"]
+        ],
+    }
 
 
 class BatchQueueTests(unittest.TestCase):
@@ -51,18 +82,23 @@ class BatchQueueTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "queue.db"
-        self.queue = observer.Queue(self.path)
+        self.queue = store.Queue(self.path)
         self.addCleanup(self.queue.db.close)
 
     def jobs(self, status=None):
         rows = self.queue.db.execute("SELECT * FROM jobs ORDER BY created").fetchall()
-        return [dict(row, event=json.loads(row["payload"])) for row in rows if status is None or row["status"] == status]
+        return [
+            dict(row, event=json.loads(row["payload"]))
+            for row in rows
+            if status is None or row["status"] == status
+        ]
 
     def test_pending_review_and_inline_are_absent_even_from_model_context(self):
-        gh = observer.GitHub(CFG)
+        gh = github.GitHub(CFG)
         pending = comment(81, "review", state="PENDING", submitted_at=None)
         published = comment(80, "review")
         paths = []
+
         def pages(path):
             paths.append(path)
             if path.endswith("/reviews"):
@@ -72,74 +108,88 @@ class BatchQueueTests(unittest.TestCase):
             if path.endswith("/issues/2/comments"):
                 return []
             self.fail(f"Pending review comments must not be fetched: {path}")
+
         with patch.object(gh, "pages", side_effect=pages):
             discussion = gh.discussion(2)
         self.assertEqual({c["id"] for c in discussion}, {80, 7})
         data = snapshot()
         data["prs"][0]["discussion"] = [pending, comment(9, pull_request_review_id=81)]
-        observer.observe(data, self.queue, CFG)
+        events.observe(data, self.queue, CFG)
         self.assertEqual(self.jobs(), [])
 
     def test_review_body_and_all_inline_are_one_persistent_job(self):
         data = snapshot()
-        observer.observe(data, self.queue, CFG)
-        observer.observe(data, self.queue, CFG)
-        reopened = observer.Queue(self.path)
+        events.observe(data, self.queue, CFG)
+        events.observe(data, self.queue, CFG)
+        reopened = store.Queue(self.path)
         self.addCleanup(reopened.db.close)
-        observer.observe(data, reopened, CFG)
+        events.observe(data, reopened, CFG)
         self.assertEqual(len(self.jobs()), 1)
-        self.assertEqual({f["id"] for f in self.jobs()[0]["event"]["feedback"]},
-                         {"review:80", "inline:7", "inline:8"})
+        self.assertEqual(
+            {f["id"] for f in self.jobs()[0]["event"]["feedback"]},
+            {"review:80", "inline:7", "inline:8"},
+        )
 
     def test_completed_legacy_comments_not_replayed_and_queued_ones_migrate(self):
         ev = event()
-        for status, feedback in zip(["done", "queued", "blocked"], ev["feedback"]):
+        for status, feedback in zip(["done", "queued", "blocked"], ev["feedback"], strict=True):
             legacy = {"key": feedback["key"], "kind": feedback["comment"]["kind"], "pr": 2}
             self.queue.enqueue(legacy)
             self.queue.finish(legacy["key"], status)
-        observer.observe(snapshot(), self.queue, CFG)
+        events.observe(snapshot(), self.queue, CFG)
         queued = self.jobs("queued")
         self.assertEqual(len(queued), 1)
         self.assertEqual([f["id"] for f in queued[0]["event"]["feedback"]], ["inline:7"])
         self.assertEqual(len(self.jobs("superseded")), 1)
-        observer.observe(snapshot(), self.queue, CFG)
+        events.observe(snapshot(), self.queue, CFG)
         self.assertEqual(len(self.jobs("queued")), 1)
 
     def test_editing_queued_comment_preserves_other_unprocessed_comments(self):
         data = snapshot()
-        observer.observe(data, self.queue, CFG)
+        events.observe(data, self.queue, CFG)
         data["prs"][0]["discussion"][1]["body"] = "Updated concern"
-        observer.observe(data, self.queue, CFG)
+        events.observe(data, self.queue, CFG)
         active = self.jobs("queued")
         self.assertEqual(len(active), 1)
-        self.assertEqual({f["id"] for f in active[0]["event"]["feedback"]},
-                         {"review:80", "inline:7", "inline:8"})
-        self.assertEqual(next(f["comment"]["body"] for f in active[0]["event"]["feedback"]
-                              if f["id"] == "inline:7"), "Updated concern")
+        self.assertEqual(
+            {f["id"] for f in active[0]["event"]["feedback"]}, {"review:80", "inline:7", "inline:8"}
+        )
+        self.assertEqual(
+            next(
+                f["comment"]["body"]
+                for f in active[0]["event"]["feedback"]
+                if f["id"] == "inline:7"
+            ),
+            "Updated concern",
+        )
 
     def test_comment_arriving_during_running_batch_is_next_batch_only(self):
         data = snapshot()
-        observer.observe(data, self.queue, CFG)
+        events.observe(data, self.queue, CFG)
         first = self.jobs()[0]
         self.queue.finish(first["key"], "running")
         data["prs"][0]["discussion"].append(comment(9))
-        observer.observe(data, self.queue, CFG)
-        observer.observe(data, self.queue, CFG)
+        events.observe(data, self.queue, CFG)
+        events.observe(data, self.queue, CFG)
         self.assertEqual(len(self.jobs("running")), 1)
         self.assertEqual(len(self.jobs("queued")), 1)
-        self.assertEqual([f["id"] for f in self.jobs("queued")[0]["event"]["feedback"]], ["inline:9"])
+        self.assertEqual(
+            [f["id"] for f in self.jobs("queued")[0]["event"]["feedback"]], ["inline:9"]
+        )
         self.assertEqual(len(self.jobs("running")[0]["event"]["feedback"]), 3)
 
     def test_changed_deleted_or_untrusted_feedback_cannot_execute_old_batch(self):
-        for mutation in [lambda p: p["discussion"][1].update(body="Edited"),
-                         lambda p: p["discussion"].pop(),
-                         lambda p: p["discussion"][1]["user"].update(login="outsider"),
-                         lambda p: p["discussion"][0].update(state="PENDING", submitted_at=None)]:
+        for mutation in [
+            lambda p: p["discussion"][1].update(body="Edited"),
+            lambda p: p["discussion"].pop(),
+            lambda p: p["discussion"][1]["user"].update(login="outsider"),
+            lambda p: p["discussion"][0].update(state="PENDING", submitted_at=None),
+        ]:
             with self.subTest(mutation=mutation):
                 data = snapshot()
                 mutation(data["prs"][0])
                 with self.assertRaisesRegex(RuntimeError, "feedback"):
-                    observer.refresh(event(), data, CFG)
+                    events.refresh(event(), data, CFG)
 
 
 class DecisionTests(unittest.TestCase):
@@ -148,7 +198,7 @@ class DecisionTests(unittest.TestCase):
         original = ev["context"]["pr"]["discussion"][1]
         original.update(path="backend/task.go", line=23, diff_hunk="@@ -22 +23 @@\n+checkOwner()")
         ev["context"]["pr"]["head"]["repo"]["large_unused_metadata"] = "unused"
-        compact = observer.prompt_event(ev)
+        compact = prompts.prompt_event(ev)
         self.assertEqual(compact["feedback"], [{"id": f["id"]} for f in ev["feedback"]])
         self.assertNotIn("repo", compact["context"]["pr"]["head"])
         evidence = compact["context"]["pr"]["discussion"][1]
@@ -159,46 +209,64 @@ class DecisionTests(unittest.TestCase):
     def test_every_id_requires_one_valid_disposition(self):
         ev = event()
         good = result(ev)
-        observer.validate_result(ev, good)
-        for decisions in [good["decisions"][:-1], good["decisions"] + [good["decisions"][0]],
-                          good["decisions"][:-1] + [dict(good["decisions"][-1], id="inline:foreign")],
-                          [dict(d, role="unknown") for d in good["decisions"]],
-                          [dict(d, reply="  ") for d in good["decisions"]]]:
+        results.validate_result(ev, good)
+        for decisions in [
+            good["decisions"][:-1],
+            good["decisions"] + [good["decisions"][0]],
+            good["decisions"][:-1] + [dict(good["decisions"][-1], id="inline:foreign")],
+            [dict(d, role="unknown") for d in good["decisions"]],
+            [dict(d, reply="  ") for d in good["decisions"]],
+        ]:
             with self.subTest(decisions=decisions), self.assertRaises(ValueError):
-                observer.validate_result(ev, dict(good, decisions=decisions))
+                results.validate_result(ev, dict(good, decisions=decisions))
 
     def test_disposition_controls_publication_and_missing_business_input_blocks(self):
         ev = event()
-        for decision, outcome in [("answered", "ready"), ("disagreed", "ready"),
-                                  ("fixed", "answer"), ("needs_input", "answer"), ("needs_input", "ready")]:
+        for decision, outcome in [
+            ("answered", "ready"),
+            ("disagreed", "ready"),
+            ("fixed", "answer"),
+            ("needs_input", "answer"),
+            ("needs_input", "ready"),
+        ]:
             with self.subTest(decision=decision, outcome=outcome), self.assertRaises(ValueError):
-                observer.validate_result(ev, result(ev, decision, outcome))
-        observer.validate_result(ev, result(ev, "needs_input", "blocked"))
+                results.validate_result(ev, result(ev, decision, outcome))
+        results.validate_result(ev, result(ev, "needs_input", "blocked"))
 
     def test_fullstack_can_own_review_decisions(self):
         ev = event()
-        schema = observer.result_schema(ev)
-        self.assertIn("fullstack", schema["properties"]["decisions"]["items"]["properties"]["role"]["enum"])
-        for decision, outcome in (("fixed", "ready"), ("answered", "answer"),
-                                  ("disagreed", "answer"), ("needs_input", "blocked")):
+        schema = results.result_schema(ev)
+        self.assertIn(
+            "fullstack", schema["properties"]["decisions"]["items"]["properties"]["role"]["enum"]
+        )
+        for decision, outcome in (
+            ("fixed", "ready"),
+            ("answered", "answer"),
+            ("disagreed", "answer"),
+            ("needs_input", "blocked"),
+        ):
             with self.subTest(decision=decision):
                 response = result(ev, decision, outcome)
                 for item in response["decisions"]:
                     item["role"] = "fullstack"
-                observer.validate_result(ev, response)
+                results.validate_result(ev, response)
 
     def test_replies_use_original_inline_root_and_do_not_duplicate_after_retry(self):
         ev = event()
         ev["feedback"][1]["comment"]["in_reply_to_id"] = 3
-        gh = observer.GitHub(CFG)
+        gh = github.GitHub(CFG)
         stored, writes = {}, []
+
         def api(path, body=None):
             writes.append((path, body))
             stored.setdefault(path, []).append(body)
-        with patch.object(gh, "pages", side_effect=lambda path: stored.get(path, [])), \
-             patch.object(gh, "api", side_effect=api):
-            observer.reply_decisions(ev, result(ev), gh)
-            observer.reply_decisions(ev, result(ev), gh)
+
+        with (
+            patch.object(gh, "pages", side_effect=lambda path: stored.get(path, [])),
+            patch.object(gh, "api", side_effect=api),
+        ):
+            publication.reply_decisions(ev, result(ev), gh)
+            publication.reply_decisions(ev, result(ev), gh)
         self.assertEqual(len(writes), 3)
         inline = [body for path, body in writes if "/pulls/" in path]
         self.assertEqual([p["in_reply_to"] for p in inline], [3, 8])
@@ -207,15 +275,16 @@ class DecisionTests(unittest.TestCase):
     def test_fixed_reply_is_withheld_until_publication_has_sha(self):
         ev = event()
         gh = Mock()
-        observer.reply_decisions(ev, result(ev, "fixed", "ready"), gh)
+        publication.reply_decisions(ev, result(ev, "fixed", "ready"), gh)
         gh.reply.assert_not_called()
-        observer.reply_decisions(ev, result(ev, "fixed", "ready"), gh, "published123")
+        publication.reply_decisions(ev, result(ev, "fixed", "ready"), gh, "published123")
         self.assertEqual(gh.reply.call_count, 3)
         self.assertTrue(all("published123" in call.args[1] for call in gh.reply.call_args_list))
 
 
 class PublicationTests(unittest.TestCase):
     """Exercise execute's boundaries with an entirely mocked git/GitHub/model."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -233,8 +302,13 @@ class PublicationTests(unittest.TestCase):
     def api(self, path, body=None):
         if "/issues/" in path:
             return {"state": "open", "labels": [{"name": "ai:managed"}]}
-        pr = {"number": 2, "draft": True, "node_id": "PR2", "head": {"sha": self.head},
-              "html_url": "https://github.com/owner/repo/pull/2"}
+        pr = {
+            "number": 2,
+            "draft": True,
+            "node_id": "PR2",
+            "head": {"sha": self.head},
+            "html_url": "https://github.com/owner/repo/pull/2",
+        }
         return [pr] if "?state=open" in path else pr
 
     def command(self, args, **kwargs):
@@ -261,20 +335,27 @@ class PublicationTests(unittest.TestCase):
 
     def execute(self, decision, outcome):
         response = result(self.ev, decision, outcome)
+
         def model(workspace, ev, cfg, run_dir, guard):
             run_dir.mkdir(parents=True)
             return response
-        with patch.object(observer, "prepare", return_value=("ai/1", "main")), \
-             patch.object(observer, "run_codex", side_effect=model), \
-             patch.object(observer, "command", side_effect=self.command):
-            return observer.execute(self.ev, self.cfg, self.gh, {"items": []}, self.state)
+
+        with (
+            patch.object(workflow, "run_codex", side_effect=model),
+            patch.object(workflow, "command", side_effect=self.command),
+        ):
+            return workflow.execute(
+                self.ev, self.cfg, self.gh, {"items": []}, self.state, prepared=("ai/1", "main")
+            )
 
     def test_questions_and_disagreement_never_commit_push_or_run_checks(self):
         for decision in ["answered", "disagreed"]:
             with self.subTest(decision=decision):
                 self.calls.clear()
                 self.execute(decision, "answer")
-                self.assertFalse(any(c[0] == "test-check" or c[1] in {"push", "add", "-c"} for c in self.calls))
+                self.assertFalse(
+                    any(c[0] == "test-check" or c[1] in {"push", "add", "-c"} for c in self.calls)
+                )
         self.assertFalse((self.state / "verified").exists())
 
     def test_failed_check_or_push_never_claims_fixed(self):
@@ -302,7 +383,9 @@ class PublicationTests(unittest.TestCase):
 
     def test_deferred_issue_failure_prevents_code_publication_and_acceptance(self):
         self.dirty = True
-        with patch.object(observer, "publish_issues", side_effect=RuntimeError("Inbox unavailable")):
+        with patch.object(
+            workflow, "publish_issues", side_effect=RuntimeError("Inbox unavailable")
+        ):
             with self.assertRaisesRegex(RuntimeError, "Inbox unavailable"):
                 self.execute("fixed", "ready")
         self.assertFalse(any(c[0] == "git" and c[1] in {"push", "add", "-c"} for c in self.calls))
@@ -318,11 +401,13 @@ class PublicationTests(unittest.TestCase):
 
     def test_changed_head_before_replies_blocks_answers(self):
         original = self.api
+
         def moved(path, body=None):
             response = original(path, body)
             if path.endswith("/pulls/2"):
                 response["head"]["sha"] = "someone-elses-commit"
             return response
+
         self.gh.api.side_effect = moved
         with self.assertRaisesRegex(RuntimeError, "head changed"):
             self.execute("answered", "answer")
@@ -352,24 +437,35 @@ class PublicationTests(unittest.TestCase):
     def test_feedback_edited_during_push_is_not_answered_as_fixed(self):
         self.dirty = True
         original = self.command
+
         def edit_during_push(args, **kwargs):
             output = original(args, **kwargs)
             if args[:2] == ["git", "push"]:
-                self.gh.discussion.return_value[1]["body"] = "Reviewer changed the requirement during push"
+                self.gh.discussion.return_value[1]["body"] = (
+                    "Reviewer changed the requirement during push"
+                )
             return output
+
         self.command = edit_during_push
         with self.assertRaisesRegex(RuntimeError, "feedback"):
             self.execute("fixed", "ready")
         self.gh.reply.assert_not_called()
-        self.assertEqual(self.ev["head"], "new")  # The outer failure handler can now mark the job Blocked.
+        self.assertEqual(
+            self.ev["head"], "new"
+        )  # The outer failure handler can now mark the job Blocked.
 
     def test_real_github_guard_blocks_changed_head(self):
-        gh = observer.GitHub(CFG)
+        gh = github.GitHub(CFG)
+
         def api(path):
             if "/issues/" in path:
                 return {"state": "open", "labels": [{"name": "ai:managed"}]}
             return {"head": {"sha": "different", "repo": {"full_name": "owner/repo"}}}
-        with patch.object(gh, "api", side_effect=api), self.assertRaisesRegex(RuntimeError, "head changed"):
+
+        with (
+            patch.object(gh, "api", side_effect=api),
+            self.assertRaisesRegex(RuntimeError, "head changed"),
+        ):
             gh.guard(self.ev)
 
 

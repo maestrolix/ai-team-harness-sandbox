@@ -6,13 +6,42 @@ on:
 permissions:
   contents: read
 jobs:
-  team-check:
+  python:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python3 -m unittest discover -s tests -v
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install './harness[dev]'
+      - run: ruff check harness
+      - run: ruff format --check harness
+      - run: python -m coverage run --rcfile=harness/pyproject.toml -m pytest harness/tests
+      - run: python -m coverage report --rcfile=harness/pyproject.toml
+      - run: python -m coverage xml --rcfile=harness/pyproject.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python-${{ matrix.python }}
+          path: coverage.xml
+      - run: python -m build harness
+      - run: harness --help
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
       - run: docker compose -f harness/compose.yaml config --quiet
+      - run: docker build -f harness/Dockerfile -t ai-team-harness:test .
+      - run: docker run --rm ai-team-harness:test --help
+      - run: test "$(docker inspect ai-team-harness:test --format '{{.Config.User}}')" = node
+  team-check:
+    needs: [python, docker]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test '${{ needs.python.result }}' = success
+      - run: test '${{ needs.docker.result }}' = success

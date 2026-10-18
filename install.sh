@@ -62,7 +62,7 @@ def project_from_url(url):
 def download(ref):
     if not re.fullmatch(r"[\w][\w./-]*", ref):
         raise ValueError("Недопустимый --ref; укажите ветку, тег или SHA.")
-    paths = ["AGENTS.md", "harness/observer.py"] + [f".codex/agents/{role}.toml" for role in ROLES]
+    paths = ["AGENTS.md"] + [f".codex/agents/{role}.toml" for role in ROLES]
     with tempfile.TemporaryDirectory(prefix="ai-team-source-") as tmp:
         run(["git", "init", "--quiet", tmp])
         run(["git", "fetch", "--quiet", "--depth=1", "--no-tags", SOURCE, ref], cwd=tmp)
@@ -104,7 +104,7 @@ def prepare_files(root, files, cfg):
     instructions = files["AGENTS.md"].split("\n## Этот репозиторий\n", 1)[0]
     model_rule = next(line for line in files["AGENTS.md"].splitlines() if line.startswith("- Все роли используют"))
     instructions += "\n\n" + model_rule + "\n- Репозиторий и GitHub Project указаны в локальном `harness.toml`.\n"
-    planned = {name: text for name, text in files.items() if name != "AGENTS.md"}
+    planned = {name: text for name, text in files.items() if name != "AGENTS.md" and not name.startswith("harness/")}
     for name, text in planned.items():
         current = read_local(root, name)
         if current is not None and current != text:
@@ -203,9 +203,11 @@ def main():
     if not configured.get("required_checks"):
         print("В harness.toml задайте required_checks: автоматический перевод PR из Draft пока отключён.")
     print("Сохраните установленные файлы обычным PR в default branch; harness.toml остаётся локальным.")
-    print("Наблюдатель запускается в отдельном чистом clone с локальным harness.toml, из корня:")
-    print("  python3 harness/observer.py --config harness.toml --scan-only")
-    print("  python3 harness/observer.py --config harness.toml --max-jobs 100000 --max-seconds 86400")
+    print("Установите отдельный runtime harness в виртуальное окружение:")
+    print(f"  python3 -m pip install 'git+{SOURCE}@{sha}#subdirectory=harness'")
+    print("Запускайте его с конфигом отдельного clone приложения:")
+    print("  harness run --config harness.toml --scan-only")
+    print("  harness run --config harness.toml --workers 1")
     print("Установщик не запускает модель, задачи или фоновую службу.")
 
 
