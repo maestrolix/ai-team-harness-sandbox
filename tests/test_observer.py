@@ -157,7 +157,9 @@ class RuntimeTests(unittest.TestCase):
         roles = list((ROOT / ".codex/agents").glob("*.toml"))
         if not roles:  # Docker runtime copies role files from its mounted project.
             self.skipTest("Role files live in the project checkout")
-        self.assertEqual(len(roles), 5)
+        names = [tomllib.loads(path.read_text())["name"] for path in roles]
+        self.assertEqual(set(names), set(observer.ROLES) - {"orchestrator"})
+        self.assertEqual(len(names), len(set(names)))
         for path in roles:
             role = tomllib.loads(path.read_text())
             self.assertEqual(role["model"], "gpt-6.1-sol")

@@ -175,6 +175,18 @@ class DecisionTests(unittest.TestCase):
                 observer.validate_result(ev, result(ev, decision, outcome))
         observer.validate_result(ev, result(ev, "needs_input", "blocked"))
 
+    def test_fullstack_can_own_review_decisions(self):
+        ev = event()
+        schema = observer.result_schema(ev)
+        self.assertIn("fullstack", schema["properties"]["decisions"]["items"]["properties"]["role"]["enum"])
+        for decision, outcome in (("fixed", "ready"), ("answered", "answer"),
+                                  ("disagreed", "answer"), ("needs_input", "blocked")):
+            with self.subTest(decision=decision):
+                response = result(ev, decision, outcome)
+                for item in response["decisions"]:
+                    item["role"] = "fullstack"
+                observer.validate_result(ev, response)
+
     def test_replies_use_original_inline_root_and_do_not_duplicate_after_retry(self):
         ev = event()
         ev["feedback"][1]["comment"]["in_reply_to_id"] = 3
