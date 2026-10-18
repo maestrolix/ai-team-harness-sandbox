@@ -1,17 +1,29 @@
-# Установщик заполняет эти поля по origin, --project и текущему пользователю gh.
+# Один конфиг подключает один репозиторий и один GitHub Project.
+# Токены хранятся в авторизации gh/Codex, а не в этом файле.
 repository = "owner/repository"
 project_owner = "owner"
-project_owner_kind = "user" # Для Project организации: "organization".
+project_owner_kind = "user" # Для Project организации — "organization".
 project_number = 1
-trusted_users = ["owner"] # Чьи комментарии к PR обрабатывать.
+trusted_users = ["owner"]
 
-# Пути относительно этого конфига. Для наблюдателя нужен отдельный чистый clone.
-workspace = "."
-state_dir = ".state" # Сохраняйте между перезапусками.
+# Пути относительно конфига. Используйте отдельный clone приложения.
+# Исходный clone не переключается; задачи меняют worktree внутри state_dir.
+workspace = "./application-clone"
+state_dir = "./state"
+workers = 1 # CLI --workers имеет приоритет.
+
+# shared разрешает один воркер. Для workers > 1 требуется isolated:
+# проверки и приложения должны использовать отдельные БД/данные/порты.
+# Harness передаёт HARNESS_TASK_ID, HARNESS_WORKER_ID, HARNESS_WORKSPACE,
+# HARNESS_STATE_DIR и уникальный COMPOSE_PROJECT_NAME. Фиксированные порты
+# и external volumes должны быть изолированы конфигурацией самого приложения.
+environment_mode = "shared"
+
 poll_seconds = 60
-job_timeout_seconds = 1800 # Лимит запуска Codex; QA дополнительно ограничен инструкциями.
-check_timeout_seconds = 300 # Отдельный лимит команды проверки.
+job_timeout_seconds = 1800 # Весь цикл одной задачи, включая подготовку и проверки.
+check_timeout_seconds = 300 # Дополнительный предел одной команды проверки.
 
-# Укажите реальные проверки приложения. Команда запускается без shell.
-check_command = [] # Например ["make", "check"]. Без команды изменения не публикуются.
-required_checks = [] # Например ["backend", "frontend"]. Без CI jobs PR остаётся Draft.
+# Команда запускается без shell в рабочей копии задачи.
+# Без команды изменения не публикуются. Подставьте проверки своего приложения.
+check_command = [] # Например ["make", "check"].
+required_checks = [] # Например ["backend", "frontend"]. Пустой список оставляет PR Draft.

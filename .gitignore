@@ -9,3 +9,13 @@ test-results/
 playwright-report/
 auth.json
 harness.toml
+
+.venv/
+.coverage*
+htmlcov/
+coverage.xml
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+harness/build/
+harness/dist/

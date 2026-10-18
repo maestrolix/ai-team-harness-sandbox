@@ -1,13 +1,13 @@
 import contextlib
 import io
-from pathlib import Path
 import tempfile
 import tomllib
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 source = (ROOT / "install.sh").read_text().split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
 installer = types.ModuleType("installer")
 exec(compile(source, str(ROOT / "install.sh"), "exec"), installer.__dict__)
@@ -18,21 +18,41 @@ class InstallTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        paths = ["AGENTS.md", "harness/observer.py"] + [f".codex/agents/{r}.toml" for r in installer.ROLES]
+        paths = ["AGENTS.md"] + [f".codex/agents/{r}.toml" for r in installer.ROLES]
         self.files = {p: (ROOT / p).read_text() for p in paths}
-        self.cfg = dict(repository="owner/app", project_owner="team", project_owner_kind="organization",
-                        project_number=8, trusted_users=["developer"], workspace=".", state_dir=".state",
-                        check_command=["make", "check"], required_checks=["build"])
+        self.cfg = dict(
+            repository="owner/app",
+            project_owner="team",
+            project_owner_kind="organization",
+            project_number=8,
+            trusted_users=["developer"],
+            workspace=".",
+            state_dir=".state",
+            check_command=["make", "check"],
+            required_checks=["build"],
+        )
 
     def test_origin_and_project_accept_expected_forms(self):
-        for origin in ("git@github.com:owner/app.git", "https://github.com/owner/app.git",
-                       "ssh://git@github.com/owner/app.git", "https://github.com/owner/app"):
+        for origin in (
+            "git@github.com:owner/app.git",
+            "https://github.com/owner/app.git",
+            "ssh://git@github.com/owner/app.git",
+            "https://github.com/owner/app",
+        ):
             self.assertEqual(installer.repository_from_origin(origin), "owner/app")
-        self.assertEqual(installer.project_from_url("https://github.com/orgs/team/projects/8/views/1"),
-                         ("organization", "team", 8))
-        self.assertEqual(installer.project_from_url("https://github.com/users/person/projects/2"),
-                         ("user", "person", 2))
-        for origin in ("https://github.com.evil/owner/app", "/tmp/repo", "git@gitlab.com:owner/app.git"):
+        self.assertEqual(
+            installer.project_from_url("https://github.com/orgs/team/projects/8/views/1"),
+            ("organization", "team", 8),
+        )
+        self.assertEqual(
+            installer.project_from_url("https://github.com/users/person/projects/2"),
+            ("user", "person", 2),
+        )
+        for origin in (
+            "https://github.com.evil/owner/app",
+            "/tmp/repo",
+            "git@gitlab.com:owner/app.git",
+        ):
             with self.assertRaises(ValueError):
                 installer.repository_from_origin(origin)
 
@@ -86,8 +106,10 @@ class InstallTests(unittest.TestCase):
 
     def test_existing_status_ids_and_custom_labels_are_preserved(self):
         original = {"id": "todo-id", "name": "Todo", "color": "BLUE", "description": "Keep me"}
-        project = {"id": "project", "fields": {"nodes": [
-            {"id": "status", "name": "Status", "options": [original]}]}}
+        project = {
+            "id": "project",
+            "fields": {"nodes": [{"id": "status", "name": "Status", "options": [original]}]},
+        }
         with patch.object(installer, "graphql") as graphql, patch.object(installer, "api") as api:
             api.return_value = [{"name": "ai:managed"}]
             installer.configure_github("owner/app", "repo-id", project)
@@ -101,8 +123,18 @@ class InstallTests(unittest.TestCase):
         self.assertIn("role:fullstack", created)
 
     def test_existing_statuses_and_labels_need_no_recreation(self):
-        project = {"id": "project", "fields": {"nodes": [
-            {"id": "status", "name": "Status", "options": [{"name": n} for n in installer.STATUSES]}]}}
+        project = {
+            "id": "project",
+            "fields": {
+                "nodes": [
+                    {
+                        "id": "status",
+                        "name": "Status",
+                        "options": [{"name": n} for n in installer.STATUSES],
+                    }
+                ]
+            },
+        }
         labels = ["ai:managed", "ai:paused"] + [f"role:{r}" for r in installer.ROLES]
         with patch.object(installer, "graphql") as graphql, patch.object(installer, "api") as api:
             api.return_value = [{"name": n} for n in labels]
@@ -119,21 +151,46 @@ class InstallTests(unittest.TestCase):
             return ""
 
         def api(path):
-            return {"login": "developer"} if path == "user" else {
-                "full_name": "owner/app", "node_id": "repo", "has_issues": True, "permissions": {"push": True}}
+            return (
+                {"login": "developer"}
+                if path == "user"
+                else {
+                    "full_name": "owner/app",
+                    "node_id": "repo",
+                    "has_issues": True,
+                    "permissions": {"push": True},
+                }
+            )
 
-        project = {"organization": {"projectV2": {"id": "project", "closed": False, "viewerCanUpdate": True}}}
-        args = ["install.sh", "--project", "https://github.com/orgs/team/projects/8",
-                "--check-command", "make check", "--required-check", "build"]
-        with patch.object(installer.sys, "argv", args), patch.object(installer.shutil, "which", return_value="tool"), \
-             patch.object(installer, "run", side_effect=run), patch.object(installer, "api", side_effect=api), \
-             patch.object(installer, "graphql", return_value=project), \
-             patch.object(installer, "download", return_value=("abc123", self.files)), \
-             patch.object(installer, "configure_github", remote_setup), contextlib.redirect_stdout(io.StringIO()):
+        project = {
+            "organization": {
+                "projectV2": {"id": "project", "closed": False, "viewerCanUpdate": True}
+            }
+        }
+        args = [
+            "install.sh",
+            "--project",
+            "https://github.com/orgs/team/projects/8",
+            "--check-command",
+            "make check",
+            "--required-check",
+            "build",
+        ]
+        with (
+            patch.object(installer.sys, "argv", args),
+            patch.object(installer.shutil, "which", return_value="tool"),
+            patch.object(installer, "run", side_effect=run),
+            patch.object(installer, "api", side_effect=api),
+            patch.object(installer, "graphql", return_value=project),
+            patch.object(installer, "download", return_value=("abc123", self.files)),
+            patch.object(installer, "configure_github", remote_setup),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             installer.main()
 
     def test_main_installs_to_repository_root_and_can_repeat(self):
         from unittest.mock import Mock
+
         remote = Mock()
         self.invoke_main(remote)
         self.invoke_main(remote)
@@ -142,7 +199,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(cfg["project_owner"], "team")
         self.assertEqual(cfg["trusted_users"], ["developer"])
         self.assertEqual(cfg["check_command"], ["make", "check"])
-        self.assertTrue((self.root / "harness/observer.py").exists())
+        self.assertFalse((self.root / "harness").exists())
         for name in ("fullstack", "backend", "frontend"):
             role = tomllib.loads((self.root / f".codex/agents/{name}.toml").read_text())
             self.assertEqual(role["name"], name)
@@ -153,8 +210,9 @@ class InstallTests(unittest.TestCase):
 
     def test_local_conflict_is_detected_before_remote_writes(self):
         from unittest.mock import Mock
-        (self.root / "harness").mkdir()
-        (self.root / "harness/observer.py").write_text("my observer")
+
+        (self.root / ".codex/agents").mkdir(parents=True)
+        (self.root / ".codex/agents/backend.toml").write_text("my role")
         remote = Mock()
         with self.assertRaises(ValueError):
             self.invoke_main(remote)
@@ -162,6 +220,7 @@ class InstallTests(unittest.TestCase):
 
     def test_remote_failure_does_not_leave_partial_local_installation(self):
         from unittest.mock import Mock
+
         with self.assertRaises(RuntimeError):
             self.invoke_main(Mock(side_effect=RuntimeError("no project access")))
         self.assertEqual(list(self.root.iterdir()), [])
