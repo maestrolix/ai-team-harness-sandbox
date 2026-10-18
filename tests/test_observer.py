@@ -208,7 +208,7 @@ class DeferredIssueTests(unittest.TestCase):
                            "content": {"number": 10, "repository": {"nameWithOwner": "owner/repo"}}}]
 
     def publish(self):
-        return observer.publish_deferred(self.event, self.issues, self.gh, self.board, self.state, lambda: None)
+        return observer.publish_issues(self.event, self.issues, self.gh, self.board, self.state, lambda: None)
 
     def test_inbox_before_managed_label_and_retry_preserves_user_status(self):
         self.assertEqual(self.publish(), ["https://github.com/owner/repo/issues/10"])
